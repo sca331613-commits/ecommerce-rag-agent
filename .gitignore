@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+
+# 虚拟环境
+.venv/
+venv/
+env/
+ENV/
+
+# 向量数据库与图片缓存（可由 ingest.py 重建，不入版本控制）
+chroma_db/
+image_cache/
+
+# 敏感信息（API Keys 等）
+.env
+*.env
+secrets.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 模型缓存（HuggingFace / sentence-transformers）
+.cache/
