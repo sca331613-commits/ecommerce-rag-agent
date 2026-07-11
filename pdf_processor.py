@@ -29,7 +29,7 @@ from config import (
     IMAGE_CACHE_DIR, VISION_IMAGE_DPI, VISION_MAX_IMAGES_PER_DOC,
     PDF_TEXT_DENSITY_THRESHOLD, PDF_IMAGE_RATIO_THRESHOLD,
     OCR_DPI, HEADER_FOOTER_MARGIN,
-    TABLE_MIN_ROWS, TABLE_MIN_COLS,
+    TABLE_MIN_ROWS, TABLE_MIN_COLS, LLM_TIMEOUT,
 )
 
 
@@ -568,6 +568,7 @@ class VisionAnalyzer:
                 ],
                 temperature=0.1,
                 max_tokens=500,
+                timeout=LLM_TIMEOUT,
             )
 
             result_text = resp.choices[0].message.content.strip()

@@ -116,3 +116,4 @@ HEADER_FOOTER_MARGIN = 50          # 页眉页脚检测边距（points）
 # Agent 工具配置
 AGENT_MAX_TOOL_CALLS = 5           # 单次对话最多调用工具次数
 AGENT_TEMPERATURE = 0.3            # Agent 决策温度
+LLM_TIMEOUT = 60.0                 # LLM API 调用超时（秒）

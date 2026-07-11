@@ -20,7 +20,7 @@ from openai import OpenAI
 
 from config import (
     DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL,
-    AGENT_MAX_TOOL_CALLS, AGENT_TEMPERATURE, MAX_HISTORY_TURNS,
+    AGENT_MAX_TOOL_CALLS, AGENT_TEMPERATURE, MAX_HISTORY_TURNS, LLM_TIMEOUT,
 )
 from agent_tools import AgentTools
 
@@ -108,6 +108,7 @@ class Agent:
                     tool_choice="auto" if turn < AGENT_MAX_TOOL_CALLS else "none",
                     temperature=AGENT_TEMPERATURE,
                     max_tokens=2000,
+                    timeout=LLM_TIMEOUT,
                 )
             except Exception as e:
                 print(f"  LLM 调用失败: {e}")

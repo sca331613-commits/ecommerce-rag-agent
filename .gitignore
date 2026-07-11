@@ -17,6 +17,10 @@ ENV/
 chroma_db/
 image_cache/
 
+# 探索面板运行时生成的文件
+.explore_state.json
+DESIGN_BOOK.md
+
 # 敏感信息（API Keys 等）
 .env
 *.env

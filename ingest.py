@@ -20,7 +20,7 @@ from config import (
     DATA_DIR, CHROMA_DIR, COLLECTION_NAME,
     EMBEDDING_MODEL, CHUNK_SIZE, CHUNK_OVERLAP,
     DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL,
-    USE_CONTEXTUAL_RETRIEVAL, PDF_DATA_DIR
+    USE_CONTEXTUAL_RETRIEVAL, PDF_DATA_DIR, LLM_TIMEOUT,
 )
 from pdf_processor import PDFProcessor
 
@@ -143,7 +143,8 @@ def generate_context_for_chunk(chunk: dict, llm_client) -> str:
             model=DEEPSEEK_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
-            max_tokens=80
+            max_tokens=80,
+            timeout=LLM_TIMEOUT,
         )
         return resp.choices[0].message.content.strip()
     except Exception as e:
@@ -185,15 +186,18 @@ def main():
     print(f"[4/6] 读取文档...")
     all_chunks = []
 
-    # 4a: Markdown 文件
-    md_dir = Path(DATA_DIR)
-    for md_file in sorted(md_dir.glob("*.md")):
-        print(f"  [Markdown] {md_file.name}")
-        with open(md_file, "r", encoding="utf-8") as f:
-            text = f.read()
-        chunks = chunk_markdown(text, source=md_file.name)
-        all_chunks.extend(chunks)
-        print(f"    -> {len(chunks)} 个 chunks")
+    # 4a: Markdown 文件（根目录 + taobao_rules 子目录）
+    md_dirs = [Path(DATA_DIR), Path(DATA_DIR) / "taobao_rules"]
+    for md_dir in md_dirs:
+        for md_file in sorted(md_dir.glob("*.md")):
+            # 用相对路径标识来源目录
+            rel_name = str(md_file.relative_to(DATA_DIR))
+            print(f"  [Markdown] {rel_name}")
+            with open(md_file, "r", encoding="utf-8") as f:
+                text = f.read()
+            chunks = chunk_markdown(text, source=rel_name)
+            all_chunks.extend(chunks)
+            print(f"    -> {len(chunks)} 个 chunks")
 
     # 4b: PDF 文件（走四层处理管线）
     pdf_processor = PDFProcessor(use_vision=True, use_contextual=False)

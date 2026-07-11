@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>知识库浏览器</title>
+<style>
+:root {
+  --bg: #F8FAFC; --surface: #FFFFFF; --border: #E2E8F0;
+  --fg: #0F172A; --muted: #64748B; --primary: #1E3A8A;
+  --radius: 10px;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--fg); padding: 24px; }
+h1 { font-size: 1.3rem; margin-bottom: 4px; }
+.sub { color: var(--muted); font-size: 0.85rem; margin-bottom: 20px; }
+
+.toolbar { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
+.toolbar select, .toolbar input {
+  padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius);
+  font-size: 0.85rem; background: var(--surface);
+}
+.stats { display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+.stat { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 10px 16px; display: flex; align-items: center; gap: 8px; font-size: 0.85rem; }
+.stat strong { color: var(--primary); font-size: 1.1rem; }
+
+.chunk-list { display: flex; flex-direction: column; gap: 10px; }
+.chunk {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px 18px;
+  transition: box-shadow 0.15s;
+}
+.chunk:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+.chunk-header { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+.tag {
+  font-size: 0.7rem; padding: 2px 8px; border-radius: 5px; font-weight: 600;
+  white-space: nowrap;
+}
+.tag-source { background: #DBEAFE; color: #1E40AF; }
+.tag-page { background: #EDE9FE; color: #7C3AED; }
+.tag-type { background: #D1FAE5; color: #065F46; }
+.tag-section { background: #FEF3C7; color: #92400E; }
+.chunk-text { font-size: 0.85rem; line-height: 1.55; color: #334155; word-break: break-all; }
+.chunk-id { font-size: 0.7rem; color: var(--muted); margin-top: 4px; font-family: monospace; }
+.no-results { text-align: center; padding: 40px; color: var(--muted); }
+</style>
+</head>
+<body>
+<h1>知识库浏览器</h1>
+<div class="sub" id="summary">加载中...</div>
+
+<div class="toolbar">
+  <select id="filterSource" onchange="render()">
+    <option value="">全部来源</option>
+  </select>
+  <select id="filterType" onchange="render()">
+    <option value="">全部类型</option>
+    <option value="text">text</option>
+    <option value="table">table</option>
+    <option value="image">image</option>
+    <option value="heading">heading</option>
+  </select>
+  <input type="text" id="filterSearch" placeholder="搜索内容..." oninput="render()">
+</div>
+
+<div class="stats" id="stats"></div>
+<div class="chunk-list" id="list"></div>
+
+<script>
+let allChunks = [];
+
+async function load() {
+  const r = await fetch('/kb');
+  const data = await r.json();
+  allChunks = data.chunks;
+
+  // Source filter options
+  const sources = [...new Set(allChunks.map(c => c.source))].sort();
+  const sel = document.getElementById('filterSource');
+  sources.forEach(s => { const o = document.createElement('option'); o.value = s; o.textContent = s; sel.appendChild(o); });
+
+  document.getElementById('summary').textContent = `共 ${data.total} 个文档片段`;
+  render();
+}
+
+function render() {
+  const src = document.getElementById('filterSource').value;
+  const typ = document.getElementById('filterType').value;
+  const q = document.getElementById('filterSearch').value.toLowerCase();
+
+  let filtered = allChunks;
+  if (src) filtered = filtered.filter(c => c.source === src);
+  if (typ) filtered = filtered.filter(c => c.chunk_type === typ);
+  if (q) filtered = filtered.filter(c => c.text.toLowerCase().includes(q) || c.section.toLowerCase().includes(q));
+
+  // Stats
+  const typeCounts = {};
+  filtered.forEach(c => { typeCounts[c.chunk_type] = (typeCounts[c.chunk_type] || 0) + 1; });
+  document.getElementById('stats').innerHTML =
+    `<div class="stat">📄 显示 <strong>${filtered.length}</strong> 个片段</div>` +
+    Object.entries(typeCounts).map(([t, n]) => `<div class="stat">🏷️ ${t}: <strong>${n}</strong></div>`).join('');
+
+  // List
+  const list = document.getElementById('list');
+  if (filtered.length === 0) {
+    list.innerHTML = '<div class="no-results">无匹配结果</div>';
+    return;
+  }
+  list.innerHTML = filtered.map(c => `
+    <div class="chunk">
+      <div class="chunk-header">
+        <span class="tag tag-source">${c.source}</span>
+        ${c.page_num ? `<span class="tag tag-page">第${c.page_num}页</span>` : ''}
+        <span class="tag tag-type">${c.chunk_type}</span>
+        ${c.section ? `<span class="tag tag-section">${c.section.slice(0,40)}</span>` : ''}
+      </div>
+      <div class="chunk-text">${escapeHtml(c.text)}</div>
+      <div class="chunk-id">${c.id}</div>
+    </div>
+  `).join('');
+}
+
+function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+load();
+</script>
+</body>
+</html>

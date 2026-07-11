@@ -12,15 +12,13 @@ rag_engine.py - RAG 核心引擎（升级版 - 支持 PDF 多模态检索）
 
 import jieba
 from rank_bm25 import BM25Okapi
-from sentence_transformers import SentenceTransformer, CrossEncoder
-import chromadb
-from openai import OpenAI
 
 from config import (
-    CHROMA_DIR, COLLECTION_NAME, EMBEDDING_MODEL, RERANKER_MODEL,
     VECTOR_TOP_K, BM25_TOP_K, FINAL_TOP_K, VECTOR_WEIGHT, BM25_WEIGHT,
-    DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL,
-    MAX_HISTORY_TURNS
+    DEEPSEEK_MODEL, MAX_HISTORY_TURNS, LLM_TIMEOUT
+)
+from model_registry import (
+    get_embedder, get_reranker, get_chroma_collection, get_deepseek_client
 )
 
 
@@ -35,27 +33,17 @@ class RAGEngine:
     def __init__(self):
         print("初始化 RAG Engine（升级版）...")
 
-        # 1. Embedding 模型（向量检索用）
-        self.embedder = SentenceTransformer(
-            EMBEDDING_MODEL, trust_remote_code=True
-        )
+        # 1. Embedding 模型（共享单例）
+        self.embedder = get_embedder()
 
-        # 2. Reranker 模型（重排用，CrossEncoder 精度更高）
-        #    如果模型未下载或加载失败，降级为不用 reranker
-        self.reranker = None
-        try:
-            print(f"  加载 Reranker: {RERANKER_MODEL}")
-            self.reranker = CrossEncoder(RERANKER_MODEL)
-        except Exception as e:
-            print(f"  ⚠️ Reranker 加载失败，降级为仅用混合检索: {e}")
-            print(f"  （不影响基本功能，只是排序精度略降）")
+        # 2. Reranker 模型（共享单例，可能为 None）
+        self.reranker = get_reranker()
 
-        # 3. ChromaDB
-        self.client = chromadb.PersistentClient(path=str(CHROMA_DIR))
-        self.collection = self.client.get_collection(COLLECTION_NAME)
+        # 3. ChromaDB（共享单例）
+        self.collection = get_chroma_collection()
 
-        # 4. LLM 客户端
-        self.llm = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
+        # 4. LLM 客户端（共享单例）
+        self.llm = get_deepseek_client()
 
         # 5. 构建 BM25 索引（从 ChromaDB 加载所有文档）
         self._build_bm25_index()
@@ -64,7 +52,8 @@ class RAGEngine:
         self.history = []
 
         print(f"知识库: {self.collection.count()} 个文档片段")
-        print(f"检索策略: 向量(×{VECTOR_WEIGHT}) + BM25(×{BM25_WEIGHT}) -> Reranker -> Top-{FINAL_TOP_K}")
+        reranker_status = "可用" if self.reranker else "降级"
+        print(f"检索策略: 向量(×{VECTOR_WEIGHT}) + BM25(×{BM25_WEIGHT}) -> Reranker({reranker_status}) -> Top-{FINAL_TOP_K}")
         print(f"功能: 混合检索 | Reranker | 引用溯源 | 多轮对话 | Query改写 | PDF多模态\n")
 
     def _build_bm25_index(self):
@@ -113,7 +102,8 @@ class RAGEngine:
                 model=DEEPSEEK_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.0,
-                max_tokens=100
+                max_tokens=100,
+                timeout=LLM_TIMEOUT,
             )
             rewritten = resp.choices[0].message.content.strip()
             if rewritten:
@@ -246,7 +236,8 @@ class RAGEngine:
                 model=DEEPSEEK_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
-                max_tokens=1000
+                max_tokens=1000,
+                timeout=LLM_TIMEOUT,
             )
             return resp.choices[0].message.content.strip()
         except Exception as e:

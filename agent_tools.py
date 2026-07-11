@@ -17,20 +17,19 @@ import base64
 from pathlib import Path
 from typing import Optional
 
-from openai import OpenAI
-import chromadb
-from sentence_transformers import SentenceTransformer, CrossEncoder
 from rank_bm25 import BM25Okapi
 import jieba
 
 from config import (
-    CHROMA_DIR, COLLECTION_NAME, EMBEDDING_MODEL, RERANKER_MODEL,
     VECTOR_TOP_K, BM25_TOP_K, FINAL_TOP_K, VECTOR_WEIGHT, BM25_WEIGHT,
-    DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL,
-    DASHSCOPE_API_KEY, QWEN_BASE_URL, QWEN_VISION_MODEL,
-    PDF_DATA_DIR, IMAGE_CACHE_DIR,
+    DEEPSEEK_MODEL, QWEN_VISION_MODEL,
+    PDF_DATA_DIR, IMAGE_CACHE_DIR, LLM_TIMEOUT,
 )
 from pdf_processor import PDFTypeDetector, PDFStructureExtractor, VisionAnalyzer
+from model_registry import (
+    get_embedder, get_reranker, get_chroma_collection,
+    get_deepseek_client, get_qwen_client,
+)
 
 
 def tokenize_zh(text: str) -> list:
@@ -48,25 +47,12 @@ class AgentTools:
     def __init__(self):
         print("初始化 Agent Tools...")
 
-        # Embedding 模型
-        self.embedder = SentenceTransformer(EMBEDDING_MODEL, trust_remote_code=True)
-
-        # Reranker（可选，加载失败降级）
-        self.reranker = None
-        try:
-            self.reranker = CrossEncoder(RERANKER_MODEL)
-        except Exception as e:
-            print(f"  ⚠️ Reranker 加载失败，降级: {e}")
-
-        # ChromaDB
-        self.client = chromadb.PersistentClient(path=str(CHROMA_DIR))
-        self.collection = self.client.get_collection(COLLECTION_NAME)
-
-        # DeepSeek LLM（文本理解）
-        self.llm = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
-
-        # Qwen 视觉模型（图片分析）
-        self.vision_client = OpenAI(api_key=DASHSCOPE_API_KEY, base_url=QWEN_BASE_URL)
+        # 共享模型（单例，不重复加载）
+        self.embedder = get_embedder()
+        self.reranker = get_reranker()
+        self.collection = get_chroma_collection()
+        self.llm = get_deepseek_client()
+        self.vision_client = get_qwen_client()
 
         # 构建 BM25 索引
         self._build_bm25_index()
@@ -369,6 +355,7 @@ class AgentTools:
                 ],
                 temperature=0.1,
                 max_tokens=500,
+                timeout=LLM_TIMEOUT,
             )
 
             result_text = resp.choices[0].message.content.strip()

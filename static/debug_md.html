@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>MD Debug</title></head>
+<body>
+<h2>Input</h2>
+<pre id="input"></pre>
+<h2>Output (rendered)</h2>
+<div id="output" style="border:1px solid #ccc;padding:16px;max-width:700px;"></div>
+<h2>Raw HTML</h2>
+<pre id="raw"></pre>
+<script>
+const text = `根据检索到的信息，退货政策主要包括七天无理由退货规则，具体条件和要求如下：
+
+### 七天无理由退货条件
+1. **适用前提**：商品详情页必须带有 **"7天无理由退货"服务标识**。
+2. **起算时间**：自签收商品之日起计算，具体为物流显示签收的次日零时起，满168小时为7天。
+3. **商品完好**：买家需对符合完好标准的商品发起退货申请。
+4. **不支持品类**：以下品类不支持七天无理由退货：
+   - 定制类商品（如个性定制、设计服务、定制服装等）
+   - 鲜活易腐类（如鲜花绿植、水产肉类、新鲜蔬果、宠物、速冻食品等）
+
+### 运费承担规则
+| 场景 | 发货运费承担方 | 退货运费承担方 |
+|------|---------------|----------------|
+| 商品包邮，买家无理由退货 | 卖家（已包邮） | **买家** |
+| 商品未包邮，买家无理由退货 | **买家** | **买家** |
+
+[来源: taobao_rules\\退款时效规则.md - 无页码]`;
+
+document.getElementById('input').textContent = text;
+
+// === THE ACTUAL formatMarkdown from index.html ===
+function formatMarkdown(text) {
+    if (!text) return '';
+    let html = text;
+
+    const placeholders = [];
+    html = html.replace(/(^\|.+\|$\n^\|[-| :]+\|$\n(?:^\|.+\|$\n?)+)/gm, (match) => {
+        const lines = match.trim().split('\n').filter(l => l.includes('|'));
+        if (lines.length < 2) return match;
+        const parseRow = (line) => line.split('|').map(c => c.trim()).filter(c => c !== '');
+        const headers = parseRow(lines[0]);
+        const rows = lines.slice(2).map(parseRow);
+        let tbl = '<table><thead><tr>';
+        headers.forEach(h => tbl += `<th>${h}</th>`);
+        tbl += '</tr></thead><tbody>';
+        rows.forEach(r => { tbl += '<tr>'; r.forEach(c => tbl += `<td>${c}</td>`); tbl += '</tr>'; });
+        tbl += '</tbody></table>';
+        placeholders.push(tbl);
+        return `\n%%PH_${placeholders.length - 1}%%\n`;
+    });
+
+    const blocks = html.split(/\n\n+/);
+    const result = blocks.map(block => {
+        let b = block.trim();
+        if (!b) return '';
+        if (/^%%PH_\d+%%$/.test(b)) return b;
+        b = b.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+        b = b.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+        b = b.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+        b = b.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+        b = b.replace(/^(\d+)[\.\、\)]\s*(.+)$/gm, '<li>$2</li>');
+        b = b.replace(/^[①②③④⑤⑥⑦⑧⑨⑩]\s*(.+)$/gm, '<li>$1</li>');
+        b = b.replace(/^\s*[-•]\s+(.+)$/gm, '<li>$1</li>');
+        b = b.replace(/\[来源:\s*(.+?)\]/g, '<span class="citation">[$1]</span>');
+        b = b.replace(/\n/g, '<br>');
+        return b;
+    });
+
+    html = result.filter(b => b).join('</p><p>');
+    html = '<p>' + html + '</p>';
+
+    html = html.replace(/((?:<li>.*?(?:<\/li>|<br>))+(?:<\/li>)?)/g, (match) => {
+        const fixed = match
+            .replace(/<br>/g, '')
+            .replace(/<\/li><li>/g, '</li>\n<li>');
+        return '<ol>' + fixed + '</ol>';
+    });
+
+    placeholders.forEach((t, i) => { html = html.replace(`%%PH_${i}%%`, t); });
+    html = html.replace(/<p>\s*<\/p>/g, '');
+    html = html.replace(/<ol>\s*<\/ol>/g, '');
+    html = html.replace(/<br>\s*<\/p>/g, '</p>');
+
+    return html;
+}
+
+const rendered = formatMarkdown(text);
+document.getElementById('output').innerHTML = rendered;
+document.getElementById('raw').textContent = rendered;
+</script>
+</body>
+</html>
