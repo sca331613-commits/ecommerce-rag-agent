@@ -41,13 +41,19 @@ function formatMarkdown(text) {
         const headers = parseRow(lines[0]);
         const rows = lines.slice(2).map(parseRow);
         let tbl = '<table><thead><tr>';
-        headers.forEach(h => tbl += `<th>${h}</th>`);
+        headers.forEach(h => tbl += '<th>' + processInline(h) + '</th>');
         tbl += '</tr></thead><tbody>';
-        rows.forEach(r => { tbl += '<tr>'; r.forEach(c => tbl += `<td>${c}</td>`); tbl += '</tr>'; });
+        rows.forEach(r => { tbl += '<tr>'; r.forEach(c => tbl += '<td>' + processInline(c) + '</td>'); tbl += '</tr>'; });
         tbl += '</tbody></table>';
         placeholders.push(tbl);
         return `\n%%PH_${placeholders.length - 1}%%\n`;
     });
+
+    function processInline(t) {
+        t = t.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+        t = t.replace(/\[来源:\s*(.+?)\]/g, '<span class="citation">[$1]</span>');
+        return t;
+    }
 
     const blocks = html.split(/\n\n+/);
     const result = blocks.map(block => {
@@ -58,9 +64,9 @@ function formatMarkdown(text) {
         b = b.replace(/^## (.+)$/gm, '<h2>$1</h2>');
         b = b.replace(/^# (.+)$/gm, '<h1>$1</h1>');
         b = b.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-        b = b.replace(/^(\d+)[\.\、\)]\s*(.+)$/gm, '<li>$2</li>');
-        b = b.replace(/^[①②③④⑤⑥⑦⑧⑨⑩]\s*(.+)$/gm, '<li>$1</li>');
-        b = b.replace(/^\s*[-•]\s+(.+)$/gm, '<li>$1</li>');
+        b = b.replace(/^(\d+)[\.\、\)]\s*(.+)$/gm, function(m, num, content) { return '<li>' + processInline(content) + '</li>'; });
+        b = b.replace(/^[①②③④⑤⑥⑦⑧⑨⑩]\s*(.+)$/gm, function(m, content) { return '<li>' + processInline(content) + '</li>'; });
+        b = b.replace(/^\s*[-•]\s+(.+)$/gm, function(m, content) { return '<li>' + processInline(content) + '</li>'; });
         b = b.replace(/\[来源:\s*(.+?)\]/g, '<span class="citation">[$1]</span>');
         b = b.replace(/\n/g, '<br>');
         return b;

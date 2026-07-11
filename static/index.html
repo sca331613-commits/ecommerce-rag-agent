@@ -677,18 +677,24 @@
             var inList = false;
             var prevEmpty = false;
 
+            function processInline(t) {
+                t = t.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+                t = t.replace(/\[来源:\s*(.+?)\]/g, '<span class="citation">[$1]</span>');
+                return t;
+            }
+
             function flushTable() {
                 if (tableLines.length < 2) {
-                    out.push('<p>' + tableLines.join('<br>') + '</p>');
+                    out.push('<p>' + tableLines.map(processInline).join('<br>') + '</p>');
                 } else {
                     var hdr = tableLines[0].split('|').map(function(c){return c.trim();}).filter(function(c){return c!=='';});
                     var rows = tableLines.slice(2).map(function(r){
                         return r.split('|').map(function(c){return c.trim();}).filter(function(c){return c!=='';});
                     });
                     var t = '<table><thead><tr>';
-                    hdr.forEach(function(h){ t += '<th>' + h + '</th>'; });
+                    hdr.forEach(function(h){ t += '<th>' + processInline(h) + '</th>'; });
                     t += '</tr></thead><tbody>';
-                    rows.forEach(function(row){ t += '<tr>'; row.forEach(function(c){ t += '<td>' + c + '</td>'; }); t += '</tr>'; });
+                    rows.forEach(function(row){ t += '<tr>'; row.forEach(function(c){ t += '<td>' + processInline(c) + '</td>'; }); t += '</tr>'; });
                     t += '</tbody></table>';
                     out.push(t);
                 }
@@ -758,26 +764,22 @@
                 var olMatch = trimmed.match(/^(\d+)[\.\、\)]\s+(.+)$/);
                 if (olMatch) {
                     if (!inList) { out.push('<ol>'); inList = true; }
-                    out.push('<li>' + olMatch[2] + '</li>');
+                    out.push('<li>' + processInline(olMatch[2]) + '</li>');
                     continue;
                 }
 
                 // 无序列表 (含缩进)
                 if (/^[-•]\s+(.+)$/.test(trimmed)) {
                     if (!inList) { out.push('<ol>'); inList = true; }
-                    out.push('<li>' + trimmed.replace(/^[-•]\s+/, '') + '</li>');
+                    out.push('<li>' + processInline(trimmed.replace(/^[-•]\s+/, '')) + '</li>');
                     continue;
                 }
 
                 // 不是列表 → 关闭列表
                 flushList();
 
-                // 普通文本 + inline 处理
-                var processed = trimmed;
-                processed = processed.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-                processed = processed.replace(/\[来源:\s*(.+?)\]/g, '<span class="citation">[$1]</span>');
-
-                out.push(processed + '<br>');
+                // 普通文本
+                out.push(processInline(trimmed) + '<br>');
             }
 
             flushTable(); flushList();
