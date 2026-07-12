@@ -17,24 +17,12 @@ import base64
 from pathlib import Path
 from typing import Optional
 
-from rank_bm25 import BM25Okapi
-import jieba
-
 from config import (
-    VECTOR_TOP_K, BM25_TOP_K, FINAL_TOP_K, VECTOR_WEIGHT, BM25_WEIGHT,
-    DEEPSEEK_MODEL, QWEN_VISION_MODEL,
+    FINAL_TOP_K, QWEN_VISION_MODEL,
     PDF_DATA_DIR, IMAGE_CACHE_DIR, LLM_TIMEOUT,
 )
 from pdf_processor import PDFTypeDetector, PDFStructureExtractor, VisionAnalyzer
-from model_registry import (
-    get_embedder, get_reranker, get_chroma_collection,
-    get_deepseek_client, get_qwen_client,
-)
-
-
-def tokenize_zh(text: str) -> list:
-    """中文分词（给 BM25 用）"""
-    return list(jieba.cut(text))
+from model_registry import get_qwen_client
 
 
 # ============================================================
@@ -46,130 +34,44 @@ class AgentTools:
 
     def __init__(self):
         print("初始化 Agent Tools...")
+        from rag_engine import RAGEngine
 
-        # 共享模型（单例，不重复加载）
-        self.embedder = get_embedder()
-        self.reranker = get_reranker()
-        self.collection = get_chroma_collection()
-        self.llm = get_deepseek_client()
+        # 委托 RAGEngine 做全部检索（共享模型单例，不重复加载）
+        self.rag = RAGEngine()
+        self.collection = self.rag.collection  # quote_source 复用
+
+        # Qwen 视觉模型（Agent 独有）
         self.vision_client = get_qwen_client()
 
-        # 构建 BM25 索引
-        self._build_bm25_index()
-
-        # PDF 缓存（避免重复解析）
+        # PDF 缓存
         self._pdf_cache = {}
 
         print(f"  知识库: {self.collection.count()} 个文档片段")
         print(f"  工具: search_pdf | read_page | extract_table | analyze_chart | quote_source")
-
-    def _build_bm25_index(self):
-        """从 ChromaDB 加载所有文档，建 BM25 索引"""
-        all_data = self.collection.get(include=["documents", "metadatas"])
-        documents = all_data["documents"]
-        if not documents:
-            print("  ⚠️ 知识库为空")
-            self.bm25 = None
-            return
-
-        tokenized_docs = [tokenize_zh(doc) for doc in documents]
-        self.bm25 = BM25Okapi(tokenized_docs)
-        self.bm25_docs = documents
-        self.bm25_metas = all_data["metadatas"]
-        self.bm25_ids = all_data["ids"]
-        print(f"  BM25 索引: {len(documents)} 篇文档")
 
     # ============================================================
     # 工具1: search_pdf - 混合检索
     # ============================================================
 
     def search_pdf(self, query: str, top_k: int = FINAL_TOP_K) -> dict:
-        """
-        混合检索（向量 + BM25 + Reranker），返回最相关的文档片段。
-        适合：简单事实查询、政策条款查找。
-        """
+        """委托 RAGEngine.retrieve() 做混合检索"""
         print(f"  🔍 [search_pdf] 查询: {query}")
-
-        # 1. 向量检索
-        query_embedding = self.embedder.encode([query]).tolist()
-        vector_results = self.collection.query(
-            query_embeddings=query_embedding,
-            n_results=VECTOR_TOP_K,
-            include=["documents", "metadatas", "distances"]
-        )
-
-        vector_docs = []
-        for i in range(len(vector_results["ids"][0])):
-            vector_docs.append({
-                "id": vector_results["ids"][0][i],
-                "text": vector_results["documents"][0][i],
-                "metadata": vector_results["metadatas"][0][i],
-                "vector_score": 1 - vector_results["distances"][0][i],  # cosine distance -> similarity
-            })
-
-        # 2. BM25 检索
-        bm25_docs = []
-        if self.bm25:
-            tokenized_query = tokenize_zh(query)
-            bm25_scores = self.bm25.get_scores(tokenized_query)
-            top_indices = sorted(range(len(bm25_scores)),
-                                 key=lambda i: bm25_scores[i], reverse=True)[:BM25_TOP_K]
-            for idx in top_indices:
-                if bm25_scores[idx] > 0:
-                    bm25_docs.append({
-                        "id": self.bm25_ids[idx],
-                        "text": self.bm25_docs[idx],
-                        "metadata": self.bm25_metas[idx],
-                        "bm25_score": float(bm25_scores[idx]),
-                    })
-
-        # 3. 合并 + 加权
-        merged = {}
-        for doc in vector_docs:
-            doc_id = doc["id"]
-            if doc_id not in merged:
-                merged[doc_id] = {**doc, "final_score": 0}
-            merged[doc_id]["final_score"] += doc["vector_score"] * VECTOR_WEIGHT
-
-        for doc in bm25_docs:
-            doc_id = doc["id"]
-            if doc_id not in merged:
-                merged[doc_id] = {**doc, "final_score": 0}
-            # 归一化 BM25 分数
-            max_bm25 = max(d["bm25_score"] for d in bm25_docs) if bm25_docs else 1
-            normalized = doc["bm25_score"] / max_bm25 if max_bm25 > 0 else 0
-            merged[doc_id]["final_score"] += normalized * BM25_WEIGHT
-
-        # 4. Reranker 精排（如果可用）
-        candidates = sorted(merged.values(), key=lambda x: x["final_score"], reverse=True)[:10]
-        if candidates and self.reranker:
-            pairs = [(query, c["text"]) for c in candidates]
-            rerank_scores = self.reranker.predict(pairs)
-            for i, score in enumerate(rerank_scores):
-                candidates[i]["rerank_score"] = float(score)
-            candidates = sorted(candidates, key=lambda x: x["rerank_score"], reverse=True)
-        else:
-            for c in candidates:
-                c["rerank_score"] = c.get("final_score", 0)
-
-        results = candidates[:top_k]
-
-        # 格式化返回
+        docs = self.rag.retrieve(query, top_k)
         return {
             "tool": "search_pdf",
             "query": query,
-            "total_found": len(results),
+            "total_found": len(docs),
             "results": [
                 {
-                    "text": r["text"][:500],
-                    "page_num": r["metadata"].get("page_num", 0),
-                    "section": r["metadata"].get("section", ""),
-                    "doc_title": r["metadata"].get("doc_title", ""),
-                    "source": r["metadata"].get("source", ""),
-                    "chunk_type": r["metadata"].get("chunk_type", "text"),
-                    "score": round(r.get("rerank_score", r.get("final_score", 0)), 4),
+                    "text": d["text"][:500],
+                    "page_num": d.get("page_num", 0),
+                    "section": d.get("section", ""),
+                    "doc_title": d.get("doc_title", ""),
+                    "source": d.get("source", ""),
+                    "chunk_type": d.get("chunk_type", "text"),
+                    "score": d.get("score", 0),
                 }
-                for r in results
+                for d in docs
             ]
         }
 
@@ -186,12 +88,12 @@ class AgentTools:
 
         pdf_path = self._find_pdf(doc_name)
         if not pdf_path:
-            return {"tool": "read_page", "error": f"未找到文档: {doc_name}"}
+            return {"tool": "read_page", "status": "error", "error": f"未找到文档: {doc_name}"}
 
         doc = fitz.open(str(pdf_path))
         if page_num < 1 or page_num > len(doc):
             doc.close()
-            return {"tool": "read_page", "error": f"页码 {page_num} 超出范围（共 {len(doc)} 页）"}
+            return {"tool": "read_page", "status": "error", "error": f"页码 {page_num} 超出范围（共 {len(doc)} 页）"}
 
         page = doc[page_num - 1]
         text = page.get_text("text")
@@ -236,24 +138,24 @@ class AgentTools:
 
         pdf_path = self._find_pdf(doc_name)
         if not pdf_path:
-            return {"tool": "extract_table", "error": f"未找到文档: {doc_name}"}
+            return {"tool": "extract_table", "status": "error", "error": f"未找到文档: {doc_name}"}
 
         tables_data = []
         with pdfplumber.open(str(pdf_path)) as pdf:
             if page_num - 1 >= len(pdf.pages):
-                return {"tool": "extract_table", "error": f"页码超出范围"}
+                return {"tool": "extract_table", "status": "error", "error": f"页码超出范围"}
             tables = pdf.pages[page_num - 1].extract_tables()
 
             if not tables:
-                return {"tool": "extract_table", "error": f"第{page_num}页没有表格"}
+                return {"tool": "extract_table", "status": "error", "error": f"第{page_num}页没有表格"}
 
             if table_index >= len(tables):
                 return {"tool": "extract_table",
-                        "error": f"第{page_num}页只有 {len(tables)} 个表格，索引 {table_index} 超出范围"}
+                        "status": "error", "error": f"第{page_num}页只有 {len(tables)} 个表格，索引 {table_index} 超出范围"}
 
             table = tables[table_index]
             if not table or len(table) < 2:
-                return {"tool": "extract_table", "error": "表格数据不完整"}
+                return {"tool": "extract_table", "status": "error", "error": "表格数据不完整"}
 
             headers = [str(cell or "").strip() for cell in table[0]]
             rows = []
@@ -293,13 +195,13 @@ class AgentTools:
 
         pdf_path = self._find_pdf(doc_name)
         if not pdf_path:
-            return {"tool": "analyze_chart", "error": f"未找到文档: {doc_name}"}
+            return {"tool": "analyze_chart", "status": "error", "error": f"未找到文档: {doc_name}"}
 
         # 渲染该页为图片（如果找不到单独的图片，就把整页渲染）
         doc = fitz.open(str(pdf_path))
         if page_num - 1 >= len(doc):
             doc.close()
-            return {"tool": "analyze_chart", "error": "页码超出范围"}
+            return {"tool": "analyze_chart", "status": "error", "error": "页码超出范围"}
 
         page = doc[page_num - 1]
         image_list = page.get_images(full=True)
@@ -315,7 +217,7 @@ class AgentTools:
             if image_index > 0:
                 doc.close()
                 return {"tool": "analyze_chart",
-                        "error": f"第{page_num}页只有 {len(image_list)} 张图片"}
+                        "status": "error", "error": f"第{page_num}页只有 {len(image_list)} 张图片"}
             mat = fitz.Matrix(2, 2)  # 2x zoom
             pix = page.get_pixmap(matrix=mat)
             image_bytes = pix.tobytes("png")
@@ -380,7 +282,7 @@ class AgentTools:
             }
 
         except Exception as e:
-            return {"tool": "analyze_chart", "error": f"视觉分析失败: {e}"}
+            return {"tool": "analyze_chart", "status": "error", "error": f"视觉分析失败: {e}"}
 
     # ============================================================
     # 工具5: quote_source - 返回引用源
@@ -396,7 +298,7 @@ class AgentTools:
         try:
             result = self.collection.get(ids=[chunk_id], include=["documents", "metadatas"])
             if not result["ids"]:
-                return {"tool": "quote_source", "error": f"未找到 chunk: {chunk_id}"}
+                return {"tool": "quote_source", "status": "error", "error": f"未找到 chunk: {chunk_id}"}
 
             text = result["documents"][0]
             meta = result["metadatas"][0]
@@ -413,7 +315,7 @@ class AgentTools:
                 "citation": f"[来源: {meta.get('source', '')} - 第{meta.get('page_num', '?')}页 - {meta.get('section', '')}]",
             }
         except Exception as e:
-            return {"tool": "quote_source", "error": str(e)}
+            return {"tool": "quote_source", "status": "error", "error": str(e)}
 
     # ============================================================
     # 辅助方法
@@ -568,4 +470,4 @@ class AgentTools:
         elif tool_name == "quote_source":
             return self.quote_source(**arguments)
         else:
-            return {"error": f"未知工具: {tool_name}"}
+            return {"status": "error", "error": f"未知工具: {tool_name}"}
