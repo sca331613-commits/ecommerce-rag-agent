@@ -20,10 +20,12 @@ api.py - RAG 系统的 HTTP 接口（升级版 - 支持 Agent + PDF 上传）
 import os
 import shutil
 import re
+import json
+import asyncio
 from pathlib import Path
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 
@@ -189,6 +191,23 @@ def agent_ask(request: QueryRequest):
         citations=result["citations"],
     )
 
+
+@app.post("/agent/ask/stream")
+async def agent_ask_stream(request: QueryRequest):
+    """Agent 流式问答（SSE）"""
+    agent = get_agent()
+
+    async def generate():
+        try:
+            for event in agent.ask_stream(request.question):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                await asyncio.sleep(0)
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 @app.post("/agent/clear")
 def agent_clear():

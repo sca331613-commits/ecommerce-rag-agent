@@ -133,6 +133,26 @@
             font-size: 11px; color: var(--muted-foreground); line-height: 1.5;
         }
 
+        /* Follow-up suggestions */
+        .followup-bar { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+        .followup-btn {
+            padding: 5px 12px; border-radius: 100px; border: 1px solid var(--border);
+            background: var(--surface); font-size: 12px; color: var(--foreground-soft);
+            cursor: pointer; transition: all 150ms; font-family: var(--font-sans);
+        }
+        .followup-btn:hover { border-color: var(--primary); color: var(--primary); background: var(--primary-soft); }
+
+        /* Feedback */
+        .feedback-bar { display: flex; gap: 8px; margin-top: 6px; align-items: center; }
+        .feedback-btn {
+            width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--border);
+            background: var(--surface); cursor: pointer; font-size: 13px;
+            display: flex; align-items: center; justify-content: center;
+            transition: all 150ms;
+        }
+        .feedback-btn:hover { border-color: var(--primary); }
+        .feedback-btn.active { background: var(--primary-soft); border-color: var(--primary); }
+
         /* ===== Main ===== */
         .main { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 
@@ -435,7 +455,7 @@
 
         async function init() {}
 
-        // ===== Send =====
+        // ===== Send (Streaming) =====
         async function send() {
             const input = document.getElementById('inputBox');
             const text = input.value.trim();
@@ -448,30 +468,95 @@
             if (welcome) welcome.remove();
 
             addMessage('user', text);
-            const typingEl = addTypingIndicator();
+
+            // 创建 AI 消息容器
+            const msgGroup = addMessageContainer('ai');
+            const bubble = msgGroup.querySelector('.msg-bubble');
+            const citationArea = msgGroup.querySelector('.msg-content');
+
+            let fullText = '';
+            let toolCalls = [];
+            let citations = [];
 
             try {
-                const resp = await fetch(`${API_BASE}/agent/ask`, {
+                const resp = await fetch(`${API_BASE}/agent/ask/stream`, {
                     method: 'POST', headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({question: text})
                 });
-                const data = await resp.json();
-                typingEl.remove();
 
-                if (data.tool_calls && data.tool_calls.length > 0) {
-                    for (const tc of data.tool_calls) {
-                        addToolCall(tc);
+                const reader = resp.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        const dataStr = line.slice(6);
+                        if (dataStr === '[DONE]') continue;
+
+                        try {
+                            const event = JSON.parse(dataStr);
+                            if (event.type === 'tool_call') {
+                                addToolCall(event);
+                                toolCalls.push(event);
+                            } else if (event.type === 'tool_error') {
+                                addToolCall({ tool: event.tool, arguments: {}, error: event.error });
+                            } else if (event.type === 'token') {
+                                fullText += event.content;
+                                bubble.innerHTML = formatMarkdown(fullText);
+                                scrollToBottom();
+                            } else if (event.type === 'done') {
+                                citations = event.citations || [];
+                                if (citations.length > 0) {
+                                    addCitations(citationArea, citations);
+                                }
+                            } else if (event.type === 'error') {
+                                bubble.innerHTML = '抱歉，系统出现问题，请稍后再试。';
+                            }
+                        } catch(e) {}
                     }
                 }
-
-                addMessage('ai', data.answer, data);
             } catch(e) {
-                typingEl.remove();
-                addMessage('ai', `抱歉，系统出现问题，请稍后再试。`);
+                bubble.innerHTML = '抱歉，系统出现问题，请稍后再试。';
+                // 处理 done 事件中的追问建议
+                if (event.type === 'done' && event.followups) {
+                    addFollowups(msgGroup, event.followups);
+                }
             } finally {
                 isSending = false;
                 document.getElementById('sendBtn').disabled = false;
             }
+        }
+
+        function addMessageContainer(role) {
+            const messages = document.getElementById('messages');
+            const group = document.createElement('div');
+            group.className = 'msg-group';
+            const row = document.createElement('div');
+            row.className = 'msg-row';
+            const avatar = document.createElement('div');
+            avatar.className = `msg-avatar ${role}`;
+            avatar.textContent = 'AI';
+            const content = document.createElement('div');
+            content.className = 'msg-content';
+            const name = document.createElement('div');
+            name.className = 'msg-name';
+            name.textContent = '客服';
+            const bubble = document.createElement('div');
+            bubble.className = `msg-bubble ${role}`;
+            bubble.textContent = '';
+            content.appendChild(name); content.appendChild(bubble);
+            row.appendChild(avatar); row.appendChild(content);
+            group.appendChild(row); messages.appendChild(group);
+            scrollToBottom();
+            return group;
         }
 
         function sendQuick(text) { document.getElementById('inputBox').value = text; send(); }
@@ -551,6 +636,32 @@
                     完成
                 </span>`;
             group.appendChild(card); messages.appendChild(group); scrollToBottom();
+        }
+
+        function addFollowups(group, followups) {
+            if (!followups || followups.length === 0) return;
+            const content = group.querySelector('.msg-content');
+            const bar = document.createElement('div');
+            bar.className = 'followup-bar';
+            followups.forEach(q => {
+                const btn = document.createElement('button');
+                btn.className = 'followup-btn';
+                btn.textContent = q;
+                btn.onclick = () => { document.getElementById('inputBox').value = q; send(); };
+                bar.appendChild(btn);
+            });
+            // 加反馈按钮
+            const fb = document.createElement('div');
+            fb.className = 'feedback-bar';
+            const upBtn = document.createElement('button');
+            upBtn.className = 'feedback-btn'; upBtn.textContent = '👍'; upBtn.title = '有帮助';
+            upBtn.onclick = function() { this.classList.toggle('active'); };
+            const downBtn = document.createElement('button');
+            downBtn.className = 'feedback-btn'; downBtn.textContent = '👎'; downBtn.title = '没帮助';
+            downBtn.onclick = function() { this.classList.toggle('active'); };
+            fb.appendChild(upBtn); fb.appendChild(downBtn);
+            content.appendChild(bar);
+            content.appendChild(fb);
         }
 
         function addCitations(container, citations) {

@@ -220,6 +220,148 @@ class Agent:
             "citations": citations,
         }
 
+    def ask_stream(self, query: str):
+        """流式版本：yield SSE events (tool_call / token / done)"""
+        print(f"\n{'='*60}")
+        print(f"用户(stream): {query}")
+        print(f"{'='*60}")
+
+        # Query 改写
+        if self.history:
+            rewritten = self._rewrite_query(query)
+            if rewritten and rewritten != query:
+                print(f"  Query改写: '{query}' -> '{rewritten}'")
+                query = rewritten
+
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        for h in self.history[-MAX_HISTORY_TURNS * 2:]:
+            messages.append({"role": h["role"], "content": h["content"]})
+        messages.append({"role": "user", "content": query})
+
+        tool_calls_log = []
+        final_answer = None
+
+        # Agent 循环：工具调用阶段（非流式）
+        is_final_turn = False
+        for turn in range(AGENT_MAX_TOOL_CALLS + 1):
+            is_final_turn = (turn >= AGENT_MAX_TOOL_CALLS)
+            use_stream = is_final_turn
+
+            try:
+                kwargs = dict(
+                    model=DEEPSEEK_MODEL, messages=messages,
+                    temperature=AGENT_TEMPERATURE, max_tokens=2000,
+                    timeout=LLM_TIMEOUT,
+                )
+                if use_stream:
+                    kwargs["stream"] = True
+                else:
+                    kwargs["tools"] = self.tool_definitions
+                    kwargs["tool_choice"] = "auto" if not is_final_turn else "none"
+
+                resp = self.llm.chat.completions.create(**kwargs)
+            except Exception as e:
+                yield {"type": "error", "content": str(e)}
+                return
+
+            # 流式最后回答
+            if use_stream:
+                final_answer = ""
+                for chunk in resp:
+                    delta = chunk.choices[0].delta
+                    if delta and delta.content:
+                        final_answer += delta.content
+                        yield {"type": "token", "content": delta.content}
+                if not final_answer:
+                    final_answer = "抱歉，我无法处理这个问题。"
+                    yield {"type": "token", "content": final_answer}
+                break
+
+            choice = resp.choices[0]
+            assistant_msg = choice.message
+
+            if assistant_msg.tool_calls:
+                # 发送工具调用事件
+                for tc in assistant_msg.tool_calls:
+                    try:
+                        args = json.loads(tc.function.arguments)
+                    except:
+                        args = {}
+                    yield {"type": "tool_call", "tool": tc.function.name, "args": args}
+
+                messages.append({
+                    "role": "assistant", "content": assistant_msg.content or "",
+                    "tool_calls": [{"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}} for tc in assistant_msg.tool_calls]
+                })
+
+                for tc in assistant_msg.tool_calls:
+                    tool_name = tc.function.name
+                    try:
+                        arguments = json.loads(tc.function.arguments)
+                    except:
+                        arguments = {}
+                    result = self.tools.call_tool(tool_name, arguments)
+                    is_error = "error" in result and result.get("status") != "ok"
+                    if is_error:
+                        result_str = json.dumps({"status": "error", "tool": tool_name, "error": result["error"]}, ensure_ascii=False)
+                        yield {"type": "tool_error", "tool": tool_name, "error": result["error"]}
+                    else:
+                        result_str = json.dumps(result, ensure_ascii=False, indent=2)
+                        if len(result_str) > 2000:
+                            result_str = result_str[:2000] + "\n...(截断)"
+
+                    tool_calls_log.append({"tool": tool_name, "arguments": arguments, "result_summary": {k: v for k, v in result.items() if k not in ("text", "rows", "markdown", "original_text")}})
+                    messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_str})
+                continue
+
+            # 非最终轮：LLM 返回了文本但没有工具调用 → 降级到流式
+            final_answer = ""
+            try:
+                stream_resp = self.llm.chat.completions.create(
+                    model=DEEPSEEK_MODEL, messages=messages,
+                    temperature=AGENT_TEMPERATURE, max_tokens=2000,
+                    timeout=LLM_TIMEOUT, stream=True,
+                )
+                for chunk in stream_resp:
+                    delta = chunk.choices[0].delta
+                    if delta and delta.content:
+                        final_answer += delta.content
+                        yield {"type": "token", "content": delta.content}
+            except Exception as e:
+                yield {"type": "error", "content": str(e)}
+                return
+            break
+
+        # 保存历史
+        self.history.append({"role": "user", "content": query})
+        self.history.append({"role": "assistant", "content": final_answer})
+        if len(self.history) > MAX_HISTORY_TURNS * 2:
+            self.history = self.history[-MAX_HISTORY_TURNS * 2:]
+
+        # 追问 + 引用
+        followups = self._generate_followups(query, final_answer)
+        citations = self._extract_citations(final_answer, tool_calls_log)
+        yield {"type": "done", "citations": citations, "followups": followups,
+               "tool_calls": [{"tool": t["tool"], "arguments": t["arguments"]} for t in tool_calls_log]}
+
+    def _generate_followups(self, query: str, answer: str) -> list:
+        """根据问答内容生成 3 条追问建议"""
+        try:
+            resp = self.llm.chat.completions.create(
+                model=DEEPSEEK_MODEL,
+                messages=[{"role": "user", "content": f"""用户刚问了"{query}"，AI回答的核心内容是：{answer[:300]}
+
+请根据这个对话上下文，生成3条用户可能感兴趣的追问，每条不超过15字。直接返回JSON数组，不要其他内容。
+示例: ["追问1","追问2","追问3"]"""}],
+                temperature=0.3, max_tokens=150, timeout=LLM_TIMEOUT,
+            )
+            text = resp.choices[0].message.content.strip()
+            import re
+            arr = re.findall(r'"([^"]+)"', text)
+            return arr[:3] if len(arr) >= 3 else []
+        except Exception:
+            return []
+
     def _extract_citations(self, answer: str, tool_calls: list) -> list:
         """从回答和工具调用中提取引用信息"""
         citations = []
